@@ -35,7 +35,7 @@ from mongoengine import Q
 from hackathon import Component, RequiredFeature, Context
 from hackathon.constants import EStatus, VERemoteProvider, VE_PROVIDER, VEStatus, ReservedUser, \
     HACK_NOTICE_EVENT, HACK_NOTICE_CATEGORY, CLOUD_PROVIDER, HACKATHON_CONFIG
-from hackathon.hmongo.models import Experiment, User
+from hackathon.hmongo.models import Hackathon, Experiment, User
 from hackathon.hackathon_response import not_found, ok
 
 __all__ = ["ExprManager"]
@@ -119,7 +119,7 @@ class ExprManager(Component):
         return [self.__get_expr_with_detail(experiment) for experiment in experiments]
 
     def scheduler_recycle_expr(self):
-        """recycle experiment acrroding to hackathon basic info on recycle configuration
+        """recycle experiment according to hackathon basic info on recycle configuration
 
         According to the hackathon's basic info on 'recycle_enabled', find out time out experiments
         Then call function to recycle them
@@ -128,60 +128,82 @@ class ExprManager(Component):
         """
         self.log.debug("start checking recyclable experiment ... ")
         for hackathon in self.hackathon_manager.get_recyclable_hackathon_list():
-            # check recycle enabled
+            # # check recycle enabled
+            # mins = self.hackathon_manager.get_recycle_minutes(hackathon)
+            # expr_time_cond = Experiment.create_time < self.util.get_now() - timedelta(minutes=mins)
+            # status_cond = Experiment.status == EStatus.RUNNING
+            # # filter out the experiments that need to be recycled
+            # exprs = self.db.find_all_objects(Experiment,
+            #                                  status_cond,
+            #                                  expr_time_cond,
+            #                                 Experiment.hackathon_id == hackathon.id)
+
+
+            # new
             mins = self.hackathon_manager.get_recycle_minutes(hackathon)
-            expr_time_cond = Experiment.create_time < self.util.get_now() - timedelta(minutes=mins)
-            status_cond = Experiment.status == EStatus.RUNNING
-            # filter out the experiments that need to be recycled
-            exprs = self.db.find_all_objects(Experiment,
-                                             status_cond,
-                                             expr_time_cond,
-                                             Experiment.hackathon_id == hackathon.id)
+            exprs = Experiment.objects(create_time__lt=self.util.get_now() - timedelta(minutes=mins),
+                                       status=EStatus.RUNNING,
+                                       hackathon=hackathon)
+
             for expr in exprs:
                 self.__recycle_expr(expr)
 
     def pre_allocate_expr(self, context):
         hackathon_id = context.hackathon_id
         self.log.debug("executing pre_allocate_expr for hackathon %s " % hackathon_id)
-        htrs = self.db.find_all_objects_by(HackathonTemplateRel, hackathon_id=hackathon_id)
-        for rel in htrs:
+        #htrs = self.db.find_all_objects_by(HackathonTemplateRel, hackathon_id=hackathon_id)
+        templates = Hackathon.objects(id=hackathon_id).first().templates
+        for temp in templates:
             try:
-                template = rel.template
-                pre_num = rel.hackathon.get_pre_allocate_number()
-                curr_num = self.db.count(Experiment,
-                                         Experiment.user_id == ReservedUser.DefaultUserID,
-                                         Experiment.hackathon_id == hackathon_id,
-                                         Experiment.template_id == template.id,
-                                         (Experiment.status == EStatus.STARTING) | (
-                                             Experiment.status == EStatus.RUNNING))
-                if template.provider == VE_PROVIDER.AZURE:
+                #template = rel.template
+                #pre_num = rel.hackathon.get_pre_allocate_number()
+                pre_num = temp.hackathon.get_pre_allocate_number()
+                # curr_num = self.db.count(Experiment,
+                #                          Experiment.user_id == ReservedUser.DefaultUserID,
+                #                          Experiment.hackathon_id == hackathon_id,
+                #                          Experiment.template_id == template.id,
+                #                          (Experiment.status == EStatus.STARTING) | (
+                #                              Experiment.status == EStatus.RUNNING))
+                curr_num = Experiment.objects(id=temp.id,
+                                              user=ReservedUser.DefaultUserID,
+                                              hackathon=hackathon_id,
+                                              status__in=[EStatus.STARTING, EStatus.RUNNING]).count()
+
+
+                if temp.provider == VE_PROVIDER.AZURE:
                     if curr_num < pre_num:
                         remain_num = pre_num - curr_num
-                        start_num = self.db.count_by(Experiment,
-                                                     user_id=ReservedUser.DefaultUserID,
-                                                     template=template,
-                                                     status=EStatus.STARTING)
+                        # start_num = self.db.count_by(Experiment,
+                        #                              user_id=ReservedUser.DefaultUserID,
+                        #                              template=template,
+                        #                              status=EStatus.STARTING)
+                        start_num = Experiment.objects(user=ReservedUser.DefaultUserID,
+                                                       template=temp,
+                                                       status=EStatus.STARTING).count()
+
                         if start_num > 0:
                             self.log.debug("there is an azure env starting, will check later ... ")
                             return
                         else:
                             self.log.debug(
-                                "no starting template: %s , remain num is %d ... " % (template.name, remain_num))
-                            self.start_expr(None, template.name, rel.hackathon.name)
+                                "no starting template: %s , remain num is %d ... " % (temp.name, remain_num))
+                            self.start_expr(None, temp.name, temp.hackathon.name)
                             break
                             # curr_num += 1
                             # self.log.debug("all template %s start complete" % template.name)
-                elif template.provider == VE_PROVIDER.DOCKER:
-                    if rel.hackathon.is_alauda_enabled():
+                elif temp.provider == VE_PROVIDER.DOCKER:
+                    # todo is_alauda_enabled()?
+                    #if temp.hackathon.is_alauda_enabled():
+                    if self.hackathon_manager.get_cloud_provider(temp.hackathon) == CLOUD_PROVIDER.ALAUDA:
                         # don't create pre-env if alauda used
                         continue
 
                     self.log.debug(
-                        "template name is %s, hackathon name is %s" % (template.name, rel.hackathon.name))
+                        "template name is %s, hackathon name is %s" % (temp.name, temp.hackathon.name))
                     if curr_num < pre_num:
                         remain_num = pre_num - curr_num
-                        self.log.debug("no idle template: %s, remain num is %d ... " % (template.name, remain_num))
-                        self.start_expr(None, template.name, rel.hackathon.name)
+                        self.log.debug("no idle template: %s, remain num is %d ... " % (temp.name, remain_num))
+                        self.start_expr(None, temp.name, temp.hackathon.name)
                         # curr_num += 1
                         break
                         # self.log.debug("all template %s start complete" % template.name)
@@ -393,7 +415,7 @@ class ExprManager(Component):
 
         :return:
         """
-        providers = map(lambda x: x.provider, expr.virtual_environments.all())
+        providers = map(lambda x: x.provider, expr.virtual_environments)
         if VE_PROVIDER.DOCKER in providers:
             self.stop_expr(expr.id)
             self.log.debug("it's stopping " + str(expr.id) + " inactive experiment now")

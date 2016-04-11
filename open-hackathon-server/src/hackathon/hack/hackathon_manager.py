@@ -178,7 +178,9 @@ class HackathonManager(Component):
         # todo fix auto recycle
         # all_hackathon = self.db.find_all_objects(Hackathon)
         # return filter(lambda h: self.is_recycle_enabled(h), all_hackathon)
-        return []
+        hackathons = Hackathon.objects().all()
+        return filter(lambda h: self.is_recycle_enabled(h), hackathons)
+        #return []
 
     def get_entitled_hackathon_list_with_detail(self, user):
         hackathon_ids = self.admin_manager.get_entitled_hackathon_ids(user.id)
@@ -740,7 +742,8 @@ class HackathonManager(Component):
         """
         # todo fix pre-allocate
         # hackathon_list = self.db.find_all_objects(Hackathon)
-        hackathon_list = []
+        #hackathon_list = []
+        hackathon_list = Hackathon.objects().all()
         for hack in hackathon_list:
             job_id = "pre_allocate_expr_" + str(hack.id)
             is_job_exists = self.scheduler.has_job(job_id)
@@ -1024,6 +1027,11 @@ def is_pre_allocate_enabled(hackathon):
 def get_pre_allocate_number(hackathon):
     hack_manager = RequiredFeature("hackathon_manager")
     value = hack_manager.get_basic_property(hackathon, HACKATHON_CONFIG.PRE_ALLOCATE_NUMBER, 1)
+    return int(value)
+
+def get_cloud_provider(hackathon):
+    hack_manager = RequiredFeature("hackathon_manager")
+    value = hack_manager.get_basic_property(hackathon, HACKATHON_CONFIG.CLOUD_PROVIDER, 0)
     return int(value)
 
 
